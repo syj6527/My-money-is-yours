@@ -1,4 +1,4 @@
-/* 💰 전리품 — 파스텔 수련 연못 (라이트) v0.5 */
+/* 💰 전리품 — 파스텔 수련 연못 (라이트) v0.6 */
 
 /* 팝업 꽉 채우기 + 둥근 모서리 + ST 기본 닫기 숨김 */
 .popup:has(.spoils-app){ padding:0; background:#FBF8EC; border-color:#ECE3CE; border-radius:20px; overflow:hidden; }
@@ -68,7 +68,7 @@
 
 /* 명세 줄 — 이름/출처/값/노트 세로 적층 */
 .spoils-app .sp-line{display:grid; grid-template-columns:1.9em 1fr auto;
-  grid-template-areas:"i n b" "i from b" "i v b" "i note b"; column-gap:9px; align-items:start;
+  grid-template-areas:"i n b" "i from b" "i v b" "i note b" "i origin b"; column-gap:9px; align-items:start;
   padding:8px 2px; border-bottom:1px solid var(--line);}
 .spoils-app .sp-line:last-child{border-bottom:0;}
 .spoils-app .sp-line .ic{grid-area:i; font-size:1.1em; line-height:1.5; align-self:start;}
@@ -78,6 +78,12 @@
 .spoils-app .sp-line .vl{grid-area:v; font-family:var(--mono); color:var(--mid); font-size:.9em; margin-top:1px; overflow-wrap:anywhere;}
 .spoils-app .sp-line .nt{grid-area:note; font-size:.79em; color:var(--ink-soft); font-style:italic; margin-top:3px; line-height:1.45;}
 .spoils-app .sp-line .sp-mini{grid-area:b; align-self:center;}
+.spoils-app .sp-line .sp-origin{grid-area:origin; font-size:.75em; color:var(--moss-deep); margin-top:4px; line-height:1.45;}
+.spoils-app .sp-line .sp-origin b{font-size:.88em; color:var(--rosy-deep); margin-right:4px;}
+.spoils-app .sp-line-actions{grid-area:b; display:grid; grid-template-columns:repeat(2,auto); gap:4px; align-self:center;}
+.spoils-app .sp-line-actions .sp-mini{grid-area:auto; padding:4px 8px;}
+.spoils-app .sp-fav{color:#E0A52B; margin-right:4px; text-shadow:0 1px 2px rgba(224,165,43,.18);}
+.spoils-app .sp-hidden-tag{display:inline-block; margin-right:5px; padding:1px 5px; border-radius:999px; background:var(--moss-fill); color:var(--moss-deep); font-size:.64em; vertical-align:2px;}
 .spoils-app .sp-line.zero .vl{color:var(--ink-soft);}
 .spoils-app .sp-line .vl.debt{color:#C0504A; font-weight:700;}
 .spoils-app .sp-line.debtline .nm{color:#C0504A;}
@@ -208,6 +214,25 @@
 /* 감정사 독설 */
 .spoils-app .sp-judge{margin-top:11px; padding:10px 12px; background:var(--rosy-fill); border-radius:12px; font-size:.9em; color:var(--rosy-deep); font-style:italic; line-height:1.5;}
 .spoils-app .sp-judge .jl{display:block; font-style:normal; font-weight:700; font-size:.74em; letter-spacing:.04em; color:var(--rosy-deep); opacity:.8; margin-bottom:3px;}
+.spoils-app .sp-favorite-reaction{margin-top:9px; padding:10px 12px; border:1px dashed #E0A52B; border-radius:10px; color:var(--ink); font-family:inherit; font-style:italic; text-align:center; line-height:1.55;}
+.spoils-app .sp-favorite-reaction span{display:block; color:#B27B11; font-size:.7em; font-style:normal; font-weight:800; margin-bottom:3px;}
+.spoils-app .sp-side-action{display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:10px;}
+.spoils-app .sp-side-action>span{font-size:.7em; color:var(--ink-soft);}
+.spoils-app .sp-loading.compact{padding:10px 4px 2px; justify-content:flex-end;}
+.spoils-app .sp-event{display:flex; flex-direction:column; gap:4px; margin-top:10px; padding:10px 12px; border-radius:11px; background:var(--card2); border-left:3px solid var(--moss); font-size:.82em; line-height:1.5;}
+.spoils-app .sp-event.found{background:var(--moss-fill);}
+.spoils-app .sp-event.danger{background:var(--rosy-fill); border-left-color:var(--rosy-deep);}
+.spoils-app .sp-event b{color:var(--moss-deep);}
+.spoils-app .sp-event.danger b{color:var(--rosy-deep);}
+.spoils-app .sp-event em{color:var(--ink);}
+.spoils-app .sp-changes{margin-top:10px; padding:9px 11px; border:1px dotted var(--line); border-radius:10px; background:var(--card2);}
+.spoils-app .sp-mini-title{font-size:.7em; font-weight:800; color:var(--ink-soft); margin-bottom:5px;}
+.spoils-app .sp-change{font-size:.77em; padding:2px 0; overflow-wrap:anywhere;}
+.spoils-app .sp-change.add{color:var(--moss-deep);}.spoils-app .sp-change.remove{color:var(--rosy-deep);}.spoils-app .sp-change.value{color:var(--mid);}
+.spoils-app .sp-ledger-row{display:flex; justify-content:space-between; gap:12px; padding:8px 2px; border-bottom:1px dotted var(--line); font-size:.8em;}
+.spoils-app .sp-ledger-row:last-child{border-bottom:0;}
+.spoils-app .sp-ledger-row span{min-width:0;}.spoils-app .sp-ledger-row b{text-align:right; color:var(--moss-deep); font-weight:600;}
+.spoils-app .sp-ledger-row.danger b{color:var(--rosy-deep);}
 /* 오늘의 소비 */
 .spoils-app .sp-spend{padding:8px 2px; border-bottom:1px dotted var(--line);}
 .spoils-app .sp-spend:last-child{border-bottom:0;}

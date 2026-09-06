@@ -1,4 +1,4 @@
-// 💰 전리품 (Spoils) — v0.5.0
+// 💰 전리품 (Spoils) — v0.6.0
 // 감정(카테고리+물건버리기) → 인수 → 금고 / 알바지옥(기록 분리·후기·별점·채팅핀). chat_metadata 채팅별 격리.
 
 const LOG = '[전리품]';
@@ -45,6 +45,9 @@ function getState() {
     if (!md[KEY]) md[KEY] = { vault: [], userAssets: [], userData: null, chars: {}, extraNames: [] };
     if (!md[KEY].userAssets) md[KEY].userAssets = [];
     if (!md[KEY].extraNames) md[KEY].extraNames = [];
+    if (!md[KEY].vault) md[KEY].vault = [];
+    if (!md[KEY].disposalLog) md[KEY].disposalLog = [];
+    if (!md[KEY].incidentLog) md[KEY].incidentLog = [];
     return md[KEY];
 }
 function saveState() {
@@ -59,7 +62,13 @@ function saveState() {
 function charState(name) {
     const st = getState();
     if (!st.chars[name]) st.chars[name] = { appraised: false, data: null, handedOver: false, balance: 0, alba: null, workLog: [] };
-    return st.chars[name];
+    const cs = st.chars[name];
+    if (!Array.isArray(cs.workLog)) cs.workLog = [];
+    if (!Array.isArray(cs.changeHistory)) cs.changeHistory = [];
+    if (!Array.isArray(cs.reclaimedItems)) cs.reclaimedItems = [];
+    if (cs.hiddenSearch === undefined) cs.hiddenSearch = null;
+    if (cs.reclaimAttempted === undefined) cs.reclaimAttempted = false;
+    return cs;
 }
 function candidateChars() {
     const c = ctx(); const out = [];
@@ -72,7 +81,7 @@ function candidateChars() {
 
 // ── 수집 + 감정 ──
 function subst(t) { try { return ctx().substituteParams(String(t ?? '')); } catch (e) { return String(t ?? ''); } }
-function gatherCard(char) { return subst([char.name ? `이름: ${char.name}` : '', char.description, char.personality, char.scenario].filter(Boolean).join('\n')).slice(0, 5000); }
+function gatherCard(char) { return subst([char.name ? `이름: ${char.name}` : '', char.description, char.personality, char.scenario].filter(Boolean).join('\n')).slice(0, 3200); }
 function gatherUserCard() {
     const c = ctx();
     const name = c.name1 || (c.substituteParams ? c.substituteParams('{{user}}') : '') || '유저';
@@ -81,7 +90,12 @@ function gatherUserCard() {
     if (!persona) persona = c.powerUserSettings?.persona_description || '';
     return { name, card: `이름: ${name}\n${persona}`.trim() };
 }
-function gatherChat() { try { return (ctx().chat ?? []).slice(-50).map(m => `${m.name}: ${m.mes}`).join('\n').slice(0, 7000); } catch (e) { return ''; } }
+function gatherChat() {
+    try {
+        const text = (ctx().chat ?? []).slice(-36).map(m => `${m.name}: ${m.mes}`).join('\n');
+        return text.slice(-4500);
+    } catch (e) { return ''; }
+}
 async function gatherLore(char) {
     const c = ctx(); const names = new Set();
     try {
@@ -94,7 +108,7 @@ async function gatherLore(char) {
         try { const d = await c.loadWorldInfo(name); if (d?.entries) text += Object.values(d.entries).map(e => e.content).filter(Boolean).join('\n') + '\n'; }
         catch (e) { console.warn(LOG, 'loadWorldInfo', name, e); }
     }
-    return text.slice(0, 6000);
+    return text.slice(0, 3500);
 }
 
 function buildPrompt(name, card, chat, lore) {
@@ -116,10 +130,13 @@ function buildPrompt(name, card, chat, lore) {
   귀중품은 폭넓게 — 시계·보석·반지·미술품·골동품·악기·명품가방·한정판 수집품·금괴·고급 와인·만년필 등 매번 다른 종류로. 같은 명품 시계만 반복하지 말 것.
 - 금액(value/worth)은 숫자+통화 위주로. 비꼬는 부연은 note에, 금액 옆 괄호는 한두 단어로 짧게.
 - note는 짧고 건조하게. persona는 성격+말투 한 줄 요약, 역시 건조하게.
+- 각 items 항목의 origin에는 그 물건을 얻은 경위나 얽힌 사연을 짧게 적는다. 실제 설정·대화에 나온 사연을 우선하고, 없으면 캐릭터답게 지어낸다.
+- items 중 캐릭터가 가장 아끼거나 집착할 물건 정확히 하나에는 favorite를 true로, 나머지는 false로 쓴다. 현금·예적금보다 사연 있는 물건을 우선한다.
 - tier는 자산 등급을 위트있는 짧은 라벨로 자유롭게 짓는다 (거지 / 생계형 인간 / 평범한 시민 / 부자 / 상속세의 화신 등, 캐릭터 맞춤).
 - verdict는 자산 구성을 꿰뚫는 감정사의 독설 한 줄. 위트있되 인신공격 직전에서 멈춘다.
   (예: "돈은 많지만 내일 아침 커피 살 현금은 없음", "자산보다 자신감이 더 많은 사람", "세무서가 좋아할 구성")
 - reaction은 유저가 이 인물의 재산을 전부 가져갈 때 인물이 보일 반응을, 그 인물의 말투 그대로 한두 마디 + 상황에 맞는 이모지 1개.
+- favorite_reaction은 favorite 물건까지 빼앗긴 걸 알아챘을 때의 별도 반응 한마디다. reaction보다 더 개인적이고 절박하거나 자존심 상하게 쓴다.
   처지에 맞게: 빈털터리는 절망·매달림("자기야… 나 어떻게 살아 😭"), 부자는 코웃음·무관심, 자존심 강하면 허세 등. 감정적이든 시니컬하든 캐릭터답게.
 - 전체 톤은 그 인물이 실제로 말하듯 자연스럽고 캐주얼하게(딱딱한 보고서체 금지). 말끝은 그 인물이 평소 채팅에서 쓰는 입말체로(긴 문어체·번역투 어미 대신 평소 말투). note·verdict·reaction엔 채팅에 나온 실제 사건·관계·디테일·말버릇을 끌어와 구체적이고 예상 밖이게. 인물(과 유저)의 성격·관계가 자산 구성과 반응에 드러나게. 뻔하지 않게, 웃기게.
 - ★ 가장 중요: verdict·reaction·persona는 아래 [말투 예시]에 드러난 이 인물 고유의 어휘·어미·말버릇·리듬·성격을 그대로 살린다. 일반적인 말투가 아니라 '${name}' 본인의 목소리여야 한다. 1인칭 대사(reaction)는 특히 평소 채팅 말투 그대로.
@@ -129,11 +146,12 @@ function buildPrompt(name, card, chat, lore) {
 {
   "tier": "자산 등급 (위트있는 짧은 라벨)",
   "income": { "monthly": "월수입", "source": "수입원" },
-  "items": [ { "category": "현금|예적금|주식·투자|부동산|차량|귀중품|물건", "icon": "이모지", "name": "품목", "value": "가치", "note": "건조한 한 줄" } ],
+  "items": [ { "category": "현금|예적금|주식·투자|부동산|차량|귀중품|물건", "icon": "이모지", "name": "품목", "value": "가치", "note": "건조한 한 줄", "origin": "얻은 경위나 사연", "favorite": false } ],
   "worth": "추정 총액",
   "verdict": "감정사의 독설 한 줄",
   "persona": "성격 + 말투 한 줄 데드팬",
   "reaction": "전 재산을 빼앗길 때 이 인물이 내뱉는 한두 마디 (인물 말투 + 이모지 1개)",
+  "favorite_reaction": "가장 아끼는 물건까지 빼앗겼을 때의 별도 한마디",
   "hidden_debt": null 또는 { "icon": "💸", "name": "빚 이름", "value": "금액", "note": "건조한 한 줄" }
 }
 
@@ -156,8 +174,15 @@ function profileId() { const c = ctx(); return c.extensionSettings?.spoils?.prof
 async function llmJSON(prompt, tokens) {
     const c = ctx(), pid = profileId();
     if (!pid) { toastr.warning('설정창(Extensions → 💰 전리품)에서 연결 프로필을 골라줘'); return null; }
-    const resp = await c.ConnectionManagerRequestService.sendRequest(pid, prompt, tokens || 4096);
-    const raw = (typeof resp === 'string') ? resp : (resp?.content ?? '');
+    const maxTokens = tokens || 2048;
+    dbg('요청:', `입력 ${String(prompt).length.toLocaleString()}자 / 출력 한도 ${maxTokens.toLocaleString()}토큰`);
+    const resp = await c.ConnectionManagerRequestService.sendRequest(pid, prompt, maxTokens);
+    const content = resp?.content;
+    const raw = typeof resp === 'string' ? resp
+        : typeof content === 'string' ? content
+            : Array.isArray(content) ? content.map(x => typeof x === 'string' ? x : (x?.text ?? x?.content ?? '')).join('')
+                : (resp?.text ?? resp?.message?.content ?? resp?.choices?.[0]?.message?.content ?? '');
+    if (!String(raw).trim()) throw new Error('empty response content');
     dbg('응답:', String(raw).slice(0, 600));
     return parseResult(raw);
 }
@@ -165,11 +190,13 @@ async function runAppraisal(name, card, lore) {
     if (!profileId()) { toastr.warning('설정창(Extensions → 💰 전리품)에서 연결 프로필을 골라줘'); return null; }
     dbg('감정 시작:', name);
     toastr.info(`${name} 감정 중…`, '💰 전리품', { timeOut: 0, tag: 'spoils' });
-    try { const d = await llmJSON(buildPrompt(name, card, gatherChat(), lore), 4096); toastr.clear(); return d; }
+    try { const d = await llmJSON(buildPrompt(name, card, gatherChat(), lore), 2048); toastr.clear(); return d; }
     catch (e) {
         toastr.clear(); dbg('감정 실패:', e?.message || String(e));
         const msg = String(e?.message || e);
-        if (/empty|candidate|safety|block/i.test(msg)) toastr.error('모델이 빈 응답을 반환했어. 연결 프로필 안전설정을 끄거나 토큰을 늘려봐.', '', { timeOut: 8000 });
+        if (/context|token|length|too long|maximum/i.test(msg)) toastr.error('입력이 모델 컨텍스트를 넘었어. 더 큰 컨텍스트의 연결 프로필을 골라줘.', '', { timeOut: 8000 });
+        else if (/empty|candidate|safety|block/i.test(msg)) toastr.error('모델이 빈 응답을 반환했어. 연결 프로필과 안전설정을 확인해줘.', '', { timeOut: 8000 });
+        else if (/json|unexpected|unterminated/i.test(msg)) toastr.error('응답 JSON이 잘렸거나 형식이 깨졌어. 다시 감정해봐.', '', { timeOut: 8000 });
         else toastr.error('감정 실패. 콘솔/로그 확인.');
         return null;
     }
@@ -182,7 +209,115 @@ async function appraiseByName(name) {
     const lore = base ? await gatherLore(base) : '';
     return runAppraisal(name, card, lore);
 }
-function normItems(d) { return (d.items || []).filter(it => it.category !== '빚').map(it => ({ category: CATS.includes(it.category) ? it.category : '물건', icon: it.icon, name: it.name, value: it.value, note: it.note })); }
+function normItems(d) {
+    const items = (d.items || []).filter(it => it.category !== '빚').map(it => ({
+        category: CATS.includes(it.category) ? it.category : '물건', icon: it.icon, name: it.name,
+        value: it.value, note: it.note, origin: it.origin || '', favorite: it.favorite === true, hidden: it.hidden === true
+    }));
+    if (items.length && !items.some(x => x.favorite)) {
+        const pick = items.find(x => x.category === '귀중품' || x.category === '물건') || items[0];
+        pick.favorite = true;
+    }
+    let seenFavorite = false;
+    items.forEach(x => { if (x.favorite && !seenFavorite) seenFavorite = true; else if (x.favorite) x.favorite = false; });
+    return items;
+}
+
+function assetKey(it) { return String(it?.name || '').trim().toLowerCase(); }
+function diffAssets(before, after) {
+    const oldMap = new Map((before?.items || []).map(x => [assetKey(x), x]));
+    const newMap = new Map((after?.items || []).map(x => [assetKey(x), x]));
+    const added = [], removed = [], changed = [];
+    newMap.forEach((it, key) => {
+        if (!oldMap.has(key)) added.push(it.name);
+        else if (String(oldMap.get(key).value) !== String(it.value)) changed.push(`${it.name}: ${oldMap.get(key).value} → ${it.value}`);
+    });
+    oldMap.forEach((it, key) => { if (!newMap.has(key)) removed.push(it.name); });
+    return { at: new Date().toLocaleString(), added: added.slice(0, 6), removed: removed.slice(0, 6), changed: changed.slice(0, 6) };
+}
+function hasDiff(d) { return d && (d.added?.length || d.removed?.length || d.changed?.length); }
+function applyAppraisal(cs, data) {
+    const next = { ...data, items: normItems(data) };
+    if (cs.data) {
+        const diff = diffAssets(cs.data, next);
+        if (hasDiff(diff)) cs.changeHistory = [diff, ...(cs.changeHistory || [])].slice(0, 5);
+    }
+    const alreadyHanded = !!cs.handedOver;
+    cs.appraised = true;
+    cs.data = next;
+    if (!alreadyHanded) {
+        cs.balance = sumCat(next.items, '현금');
+        cs.hiddenSearch = null;
+        cs.reclaimAttempted = false;
+        cs.reclaimResult = null;
+        cs.raidEvent = null;
+    }
+}
+function addProceeds(st, amount, label) {
+    if (amount <= 0) return;
+    let cash = (st.userAssets || []).find(x => x._spoilsProceeds);
+    if (!cash) {
+        cash = { category: '현금', icon: '💵', name: '전리품 처분 수익', value: '0원', note: '남의 물건을 현금으로 바꾼 결과', origin: '', _spoilsProceeds: true };
+        st.userAssets.push(cash);
+    }
+    cash.value = `${parseWon(cash.value) + amount}원`;
+    cash.note = label;
+}
+async function genHiddenAsset(name, cs, found) {
+    const owned = (cs.data?.items || []).map(x => `${x.name}(${x.value})`).slice(0, 12).join(', ');
+    const prompt = `재산 감정 뒤 '${name}'의 방이나 주머니를 한 번 더 뒤진 결과다. 캐릭터 설정과 말투를 살려 짧고 웃기게 쓴다. 반드시 한국어 JSON만 출력한다.
+[결과] ${found ? '뭔가 하나 발견됨' : '가치 있는 것은 발견되지 않음'}
+[성격] ${cs.data?.persona || '(없음)'}
+[기존 자산] ${owned || '(없음)'}
+[말투] ${recentLinesOf(name, 6) || '(없음)'}
+${found ? '[출력] { "found": true, "item": { "category": "현금|예적금|주식·투자|부동산|차량|귀중품|물건", "icon": "이모지", "name": "숨겨진 것", "value": "가치", "note": "발견 상태", "origin": "숨긴 사연" }, "reaction": "들킨 본인의 한마디 + 이모지" }' : '[출력] { "found": false, "message": "뒤졌지만 나온 게 없는 웃긴 한 줄", "reaction": "그 모습을 본 본인의 한마디 + 이모지" }'} `;
+    return llmJSON(prompt, 1280);
+}
+async function genReclaim(name, item, success, persona) {
+    const prompt = `'${name}'가 빼앗긴 물건 '${item.name}'(${item.value})을 몰래 되찾으려 했다. ${success ? '성공했다.' : '현장에서 들켜 실패했다.'}
+캐릭터 고유 말투와 성격으로 짧고 웃기게 쓴다. 반드시 한국어 JSON만 출력한다.
+[성격] ${persona || '(없음)'}
+[물건 사연] ${item.origin || item.note || '(없음)'}
+[말투] ${recentLinesOf(name, 6) || '(없음)'}
+[출력] { "detail": "무슨 수법을 썼는지 한 줄", "line": "들키거나 성공한 뒤 본인의 변명 한마디 + 이모지" }`;
+    return llmJSON(prompt, 1024);
+}
+function maybeAuthorityEvent(st, cs, name) {
+    const acquired = (st.vault || []).filter(x => x.from === name);
+    const total = acquired.reduce((s, x) => s + Math.max(0, itemVal(x)), 0);
+    const hasDebt = acquired.some(x => x.debt);
+    const chance = hasDebt ? 0.36 : total >= 1e8 ? 0.24 : total >= 1e7 ? 0.11 : 0.03;
+    if (Math.random() >= chance) return null;
+
+    let event;
+    if (hasDebt && Math.random() < 0.65) {
+        const targets = acquired.filter(x => !x.debt);
+        const target = targets[Math.floor(Math.random() * targets.length)];
+        if (target) {
+            st.vault.splice(st.vault.indexOf(target), 1);
+            event = { icon: '🕶️', title: '채권자 방문', text: `채권자가 “원래 담보였다”며 ${target.name}을 들고 사라짐.`, loss: target.value };
+        }
+    }
+    if (!event && total >= 1e8 && Math.random() < 0.55) {
+        const tax = Math.max(10000, Math.round(total * (0.02 + Math.random() * 0.04) / 10000) * 10000);
+        const debt = { category: '빚', icon: '🧾', name: `${name} 재산 취득세`, value: `${tax}원`, note: '축하는 세무서가 먼저 해줬다', debt: true, from: name };
+        st.vault.push(debt);
+        event = { icon: '🧾', title: '세무서 출석', text: `${fmtWon(tax)}짜리 취득세 고지서가 광속으로 도착함.`, loss: `${tax}원` };
+    }
+    if (!event) {
+        const targets = acquired.filter(x => !x.debt && parseWon(x.value) > 0);
+        const target = targets[Math.floor(Math.random() * targets.length)];
+        if (target) {
+            st.vault.splice(st.vault.indexOf(target), 1);
+            event = { icon: '⚖️', title: '소유권 분쟁', text: `${target.name}에 공동 소유자가 튀어나와 임시 압류해 감.`, loss: target.value };
+        }
+    }
+    if (!event) return null;
+    event.at = new Date().toLocaleString(); event.from = name;
+    st.incidentLog = [event, ...(st.incidentLog || [])].slice(0, 10);
+    cs.raidEvent = event;
+    return event;
+}
 
 // ── 알바지옥 ──
 const JOB_POOL = [
@@ -304,7 +439,7 @@ async function genReview(cs, entry) {
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이:
 { "before": "알바 전 한 줄 평", "tasks": ["한 일 3~5개"], "review": "다른 알바생 위한 후기 한두 문장", "mood": "이모지 + 분위기 한 마디", "stars": 정수 }`;
-    try { return await llmJSON(prompt, 4096); }
+    try { return await llmJSON(prompt, 1536); }
     catch (e) { dbg('후기 생성 실패:', e?.message || String(e)); toastr.error('후기 생성 실패. 로그 확인.'); return null; }
 }
 async function genDayReport(name, log) {
@@ -326,7 +461,7 @@ ${jobs || '(없음)'}
 [말투 예시 — 최근 대사]
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이: { "timeline": [...], "diary": "...", "resolve": "..." }`;
-    try { return await llmJSON(prompt, 4096); }
+    try { return await llmJSON(prompt, 1792); }
     catch (e) { dbg('하루 보고서 실패:', e?.message || String(e)); toastr.error('하루 보고서 실패. 로그 확인.'); return null; }
 }
 async function genJobTakes(name, jobs) {
@@ -377,7 +512,7 @@ async function genSteal(name, amount, workLog) {
 ${voice || '(없음)'}
 [${name} ↔ ${userName} 최근 대화]
 ${convo || '(없음)'}`;
-    try { return await llmJSON(prompt, 4096); }
+    try { return await llmJSON(prompt, 1536); }
     catch (e) { dbg('뽀리기 생성 실패:', e?.message || String(e)); return null; }
 }
 function showStealPopup(name, amount, d) {
@@ -406,22 +541,26 @@ async function genSpending(name) {
 [말투 예시 — 최근 대사]
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이: { "items": [ { "name": "오늘 산 것", "reason": "이 캐릭터 말투의 한 줄 이유" } ] }`;
-    try { return await llmJSON(prompt, 4096); }
+    try { return await llmJSON(prompt, 1536); }
     catch (e) { dbg('소비 생성 실패:', e?.message || String(e)); toastr.error('소비 생성 실패. 로그 확인.'); return null; }
 }
 
 // ── 렌더 ──
-const ui = { tab: 'appraise', sel: null, $box: null, chars: [], popup: null, openLog: null, spendBusy: null, compareBusy: false, dayBusy: false, dayOpen: true, takesBusy: false, stealBusy: false };
+const ui = { tab: 'appraise', sel: null, $box: null, chars: [], popup: null, openLog: null, spendBusy: null, compareBusy: false, dayBusy: false, dayOpen: true, takesBusy: false, stealBusy: false, hiddenBusy: false, reclaimBusy: false };
 
 function assetLine(it, opts = {}) {
     const btn = opts.trash ? `<button class="sp-mini trash" data-act="trash" data-idx="${it._i}">🗑️ 버리기</button>`
-        : opts.ret ? `<button class="sp-mini" data-act="return" data-idx="${it._i}">되돌려주기</button>` : '';
+        : opts.vault ? `<span class="sp-line-actions">
+            ${!it.debt ? `<button class="sp-mini" data-act="sell" data-idx="${it._i}">판매</button><button class="sp-mini" data-act="auction" data-idx="${it._i}">경매</button><button class="sp-mini trash" data-act="discard" data-idx="${it._i}">폐기</button>` : ''}
+            <button class="sp-mini" data-act="return" data-idx="${it._i}">${it.debt ? '돌려보내기' : '반환'}</button>
+          </span>` : '';
     return `<div class="sp-line ${parseWon(it.value) === 0 ? 'zero' : ''}">
       <span class="ic">${esc(it.icon || CAT_ICON[it.category] || '📦')}</span>
-      <span class="nm">${esc(it.name)}</span>
+      <span class="nm">${it.favorite ? '<span class="sp-fav" title="최애 물건">★</span>' : ''}${it.hidden ? '<span class="sp-hidden-tag">발견</span>' : ''}${esc(it.name)}</span>
       ${opts.from ? `<span class="sp-from">${esc(opts.from)}</span>` : ''}
       <span class="vl ${it.debt ? 'debt' : ''}">${it.debt ? '-' : ''}${esc(it.value)}</span>
-      ${it.note ? `<span class="nt">${esc(it.note)}</span>` : ''}${btn}</div>`;
+      ${it.note ? `<span class="nt">${esc(it.note)}</span>` : ''}
+      ${it.origin ? `<span class="sp-origin"><b>사연</b> ${esc(it.origin)}</span>` : ''}${btn}</div>`;
 }
 function renderSections(items, mode) {
     const g = {};
@@ -429,7 +568,7 @@ function renderSections(items, mode) {
     let html = '';
     CATS.forEach(cat => {
         const arr = g[cat]; if (!arr || !arr.length) return;
-        const rows = arr.map(it => assetLine(it, { trash: mode === 'appraise' && cat === '물건', ret: mode === 'vault', from: mode === 'vault' ? it.from : null })).join('');
+        const rows = arr.map(it => assetLine(it, { trash: mode === 'appraise' && cat === '물건', vault: mode === 'vault', from: mode === 'vault' ? it.from : null })).join('');
         html += `<div class="sp-cat"><div class="sp-cat-hd"><span>${CAT_ICON[cat]} ${cat}</span><span class="sp-cat-sum">${fmtWon(arr.reduce((s, it) => s + itemVal(it), 0))}</span></div>${rows}</div>`;
     });
     return html || '<div class="sp-empty">항목이 없습니다.</div>';
@@ -481,6 +620,24 @@ function renderCompare() {
     </div>`;
 }
 
+function renderChangeHistory(cs) {
+    const h = cs.changeHistory?.[0];
+    if (!h) return '';
+    const rows = [
+        ...(h.added || []).map(x => `<div class="sp-change add">+ ${esc(x)}</div>`),
+        ...(h.removed || []).map(x => `<div class="sp-change remove">− ${esc(x)}</div>`),
+        ...(h.changed || []).map(x => `<div class="sp-change value">↕ ${esc(x)}</div>`)
+    ].join('');
+    return rows ? `<div class="sp-changes"><div class="sp-mini-title">최근 재감정 변동</div>${rows}</div>` : '';
+}
+function renderHiddenSearch(cs) {
+    if (cs.handedOver) return '';
+    if (ui.hiddenBusy) return '<div class="sp-loading compact"><span class="sp-spin"></span> 서랍 안쪽까지 뒤지는 중…</div>';
+    if (!cs.hiddenSearch) return '<div class="sp-side-action"><button class="sp-btn ghost sm" data-act="hiddenfind">🔎 한 번 더 뒤지기</button><span>감정 1회당 한 번</span></div>';
+    const h = cs.hiddenSearch;
+    return `<div class="sp-event ${h.found ? 'found' : ''}"><b>${h.found ? '🔎 숨은 재산 발견' : '🕳️ 수색 종료'}</b><span>${esc(h.message || h.item?.name || '')}</span>${h.reaction ? `<em>“${esc(h.reaction)}”</em>` : ''}</div>`;
+}
+
 function renderAppraise(cs) {
     const multi = selectableNames().length > 1;
     const isExtra = !ui.chars.find(x => x.name === ui.sel);
@@ -495,6 +652,8 @@ function renderAppraise(cs) {
           ${renderSections(d.items, 'appraise')}
           <div class="sp-total"><span class="lbl">추정 총액</span><span class="amt">${esc(d.worth || '?')}</span></div>
           ${d.verdict ? `<div class="sp-judge"><span class="jl">감정사 평가</span>“${esc(d.verdict)}”</div>` : ''}
+          ${renderChangeHistory(cs)}
+          ${renderHiddenSearch(cs)}
           ${cs.handedOver ? '<div class="sp-done">이미 인수 완료</div>' : '<div class="sp-handover"><button class="sp-btn" data-act="handover">재산 넘기기 ▾</button></div>'}
         </div>`;
     } else assets = `<div class="sp-empty">감정하기를 눌러 ${esc(ui.sel)}의 재산을 감정합니다.</div>`;
@@ -510,15 +669,21 @@ function renderAppraise(cs) {
 
     let slip = '<div class="sp-card"><div class="sp-ttl">인수증</div><div class="sp-slip empty">아직 인수한 게 없습니다.</div></div>';
     if (cs.handedOver && cs.data) {
-        const d = cs.data;
-        const lines = (d.items || []).map(it => `<div class="sp-line"><span class="ic">${esc(it.icon || CAT_ICON[it.category] || '•')}</span><span class="nm">${esc(it.name)}</span><span class="vl">${esc(it.value)}</span></div>`).join('');
+        const d = cs.handoverSnapshot || cs.data;
+        const lines = (d.items || []).map(it => `<div class="sp-line"><span class="ic">${esc(it.icon || CAT_ICON[it.category] || '•')}</span><span class="nm">${it.favorite ? '<span class="sp-fav">★</span>' : ''}${esc(it.name)}</span><span class="vl">${esc(it.value)}</span></div>`).join('');
         const debtLine = cs.handedDebt ? `<div class="sp-line debtline"><span class="ic">${esc(cs.handedDebt.icon || '💸')}</span><span class="nm">⚠ ${esc(cs.handedDebt.name)} <span class="sp-tag from">딸려옴</span></span><span class="vl debt">-${esc(cs.handedDebt.value)}</span></div>` : '';
+        const reclaimable = (getState().vault || []).some(x => x.from === ui.sel && !x.debt);
+        const reclaim = cs.reclaimResult ? `<div class="sp-event ${cs.reclaimResult.success ? 'found' : 'danger'}"><b>${cs.reclaimResult.success ? '🕵️ 회수 성공' : '🚨 회수 실패'}</b><span>${esc(cs.reclaimResult.detail || '')}</span>${cs.reclaimResult.line ? `<em>“${esc(cs.reclaimResult.line)}”</em>` : ''}</div>`
+            : (!cs.reclaimAttempted && reclaimable ? `<div class="sp-side-action"><button class="sp-btn ghost sm" data-act="reclaim">${ui.reclaimBusy ? '잠입 중…' : '🕵️ 되찾기 시도'}</button><span>캐릭터당 인수 1회</span></div>` : '');
+        const raid = cs.raidEvent ? `<div class="sp-event danger"><b>${esc(cs.raidEvent.icon)} ${esc(cs.raidEvent.title)}</b><span>${esc(cs.raidEvent.text)}</span></div>` : '';
         slip = `<div class="sp-card"><div class="sp-ttl">인수증</div>
           <div class="sp-slip"><div class="sp-stamp">인 수 완 료</div>
             <div class="sp-sh"><div class="t">인수 명세서</div><div class="s">${esc(ui.sel)} → 귀하</div></div>
             ${lines}${debtLine}
             <div class="sp-total"><span class="lbl">인수 총액</span><span class="amt">${esc(d.worth || '?')}</span></div>
             ${d.reaction ? `<div class="sp-reaction">“${esc(d.reaction)}”</div>` : ''}
+            ${d.favorite_reaction ? `<div class="sp-favorite-reaction"><span>★ 최애 물건까지 확인한 뒤</span>“${esc(d.favorite_reaction)}”</div>` : ''}
+            ${raid}${reclaim}
           </div></div>`;
     }
     return top + assets + spendCard + renderCompare() + slip;
@@ -526,6 +691,8 @@ function renderAppraise(cs) {
 
 function renderVault(st) {
     const mine = st.userAssets || [], trans = st.vault || [];
+    const disposal = (st.disposalLog || []).slice(0, 5).map(x => `<div class="sp-ledger-row"><span>${esc(x.icon)} ${esc(x.item)}</span><b>${esc(x.result)}</b></div>`).join('');
+    const incidents = (st.incidentLog || []).slice(0, 5).map(x => `<div class="sp-ledger-row danger"><span>${esc(x.icon)} ${esc(x.title)}</span><b>${esc(x.text)}</b></div>`).join('');
     return `
       <div class="sp-balance"><div class="lbl">내 총자산</div><div class="amt">${fmtWon(sumAll(mine) + sumAll(trans))}</div></div>
       <div class="sp-card">
@@ -536,7 +703,9 @@ function renderVault(st) {
       <div class="sp-card">
         <div class="sp-cardhead"><span class="sp-ttl">인수한 재산 <span class="sp-sub">${fmtWon(sumAll(trans))}</span></span>${trans.length ? '<button class="sp-btn ghost sm" data-act="returnall">전체 되돌려주기</button>' : ''}</div>
         ${trans.length ? renderSections(trans, 'vault') : '<div class="sp-empty">인수한 재산이 없습니다.</div>'}
-      </div>`;
+      </div>
+      ${disposal ? `<div class="sp-card"><div class="sp-ttl">🧾 처분 내역</div>${disposal}</div>` : ''}
+      ${incidents ? `<div class="sp-card"><div class="sp-ttl">🚨 뜻밖의 방문자</div>${incidents}</div>` : ''}`;
 }
 
 function renderLogRow(r) {
@@ -623,13 +792,13 @@ async function onAction(e) {
     else if (act === 'appraise') {
         const char = ui.chars.find(x => x.name === ui.sel);
         const data = char ? await appraiseChar(char) : await appraiseByName(ui.sel);
-        if (data) { cs.appraised = true; cs.data = { ...data, items: normItems(data) }; cs.handedOver = false; cs.balance = sumCat(cs.data.items, '현금'); saveState(); render(); }
+        if (data) { applyAppraisal(cs, data); saveState(); render(); }
     }
     else if (act === 'appraiseall') {
         for (const n of selectableNames()) {
             const char = ui.chars.find(x => x.name === n);
             const data = char ? await appraiseChar(char) : await appraiseByName(n);
-            if (data) { const c2 = charState(n); c2.appraised = true; c2.data = { ...data, items: normItems(data) }; c2.handedOver = false; c2.balance = sumCat(c2.data.items, '현금'); }
+            if (data) { const c2 = charState(n); applyAppraisal(c2, data); }
         }
         saveState(); render(); toastr.success('전체 감정 완료');
     }
@@ -648,11 +817,35 @@ async function onAction(e) {
     }
     else if (act === 'appraiseuser') {
         const d = await appraiseUser();
-        if (d) { st.userAssets = normItems(d); st.userData = { worth: d.worth, persona: d.persona, verdict: d.verdict }; saveState(); render(); }
+        if (d) {
+            const proceeds = (st.userAssets || []).filter(x => x._spoilsProceeds);
+            st.userAssets = [...normItems(d), ...proceeds];
+            st.userData = { worth: d.worth, persona: d.persona, verdict: d.verdict }; saveState(); render();
+        }
+    }
+    else if (act === 'hiddenfind') {
+        if (!cs.data || cs.handedOver || cs.hiddenSearch || ui.hiddenBusy) return;
+        ui.hiddenBusy = true; render();
+        const found = Math.random() < 0.72;
+        let d = null;
+        try { d = await genHiddenAsset(ui.sel, cs, found); }
+        catch (err) { dbg('숨은 재산 탐색 실패:', err?.message || String(err)); toastr.error('수색 결과 생성 실패. 다시 눌러봐.'); }
+        ui.hiddenBusy = false;
+        if (d) {
+            if (found && d.item) {
+                const item = normItems({ items: [{ ...d.item, favorite: false, hidden: true }] })[0];
+                if (item) { item.favorite = false; item.hidden = true; cs.data.items.push(item); }
+                cs.data.worth = fmtWon(sumAll(cs.data.items));
+                cs.hiddenSearch = { found: true, item, message: item ? `${item.name} · ${item.value}` : '정체불명의 무언가', reaction: d.reaction || '' };
+            } else cs.hiddenSearch = { found: false, message: d.message || '먼지만 재산 증식에 성공했다.', reaction: d.reaction || '' };
+            saveState();
+        }
+        render();
     }
     else if (act === 'trash') { const i = +el.dataset.idx; if (cs.data?.items) { cs.data.items.splice(i, 1); saveState(); render(); } }
     else if (act === 'handover') {
         if (!cs.data) return;
+        cs.handoverSnapshot = JSON.parse(JSON.stringify(cs.data));
         cs.data.items.forEach(m => st.vault.push({ ...m, from: ui.sel }));
         cs.handedDebt = null;
         const hd = cs.data.hidden_debt;
@@ -661,9 +854,13 @@ async function onAction(e) {
             st.vault.push({ ...debt, from: ui.sel });
             cs.handedDebt = debt;
         }
-        cs.handedOver = true; cs.balance = 0; cs.alba = null; saveState(); ui.tab = 'vault'; render();
-        if (cs.handedDebt) toastr.warning(`어... ${ui.sel}의 빚도 딸려왔습니다.`, '💸', { timeOut: 6000 });
+        cs.handedOver = true; cs.balance = 0; cs.alba = null; cs.reclaimAttempted = false; cs.reclaimResult = null;
+        const raid = maybeAuthorityEvent(st, cs, ui.sel);
+        saveState(); ui.tab = 'vault'; render();
+        if (raid) toastr.warning(raid.text, `${raid.icon} ${raid.title}`, { timeOut: 8000 });
+        else if (cs.handedDebt) toastr.warning(`어... ${ui.sel}의 빚도 딸려왔습니다.`, '💸', { timeOut: 6000 });
         else toastr.success(`${ui.sel}의 재산을 인수했습니다.`);
+        if (cs.data.favorite_reaction) toastr.info(cs.data.favorite_reaction, '★ 최애 물건까지 압수', { timeOut: 7000 });
     }
     else if (act === 'returnall') {
         (st.vault || []).forEach(item => { if (item.from && item.from !== '내 것' && !item.debt) charState(item.from).balance += parseWon(item.value); });
@@ -671,7 +868,50 @@ async function onAction(e) {
     }
     else if (act === 'return') {
         const i = +el.dataset.idx, item = st.vault[i]; st.vault.splice(i, 1);
-        if (item?.from && item.from !== '내 것') charState(item.from).balance += parseWon(item.value);
+        if (item?.from && item.from !== '내 것' && !item.debt) charState(item.from).balance += parseWon(item.value);
+        saveState(); render();
+    }
+    else if (act === 'sell' || act === 'auction') {
+        const i = +el.dataset.idx, item = st.vault[i];
+        if (!item || item.debt) return;
+        const base = Math.max(0, parseWon(item.value));
+        const rate = act === 'auction' ? (0.45 + Math.random() * 1.4) : (0.65 + Math.random() * 0.25);
+        const proceeds = Math.max(0, Math.round(base * rate / 1000) * 1000);
+        st.vault.splice(i, 1);
+        addProceeds(st, proceeds, `${item.name} 처분분 포함`);
+        const result = act === 'auction' ? `${fmtWon(proceeds)} 낙찰 (${rate >= 1 ? '떡상' : '유찰 직전'})` : `${fmtWon(proceeds)}에 판매`;
+        st.disposalLog = [{ icon: act === 'auction' ? '🔨' : '🏷️', item: item.name, result, at: new Date().toLocaleString() }, ...(st.disposalLog || [])].slice(0, 10);
+        saveState(); render(); toastr.success(result, item.name);
+    }
+    else if (act === 'discard') {
+        const i = +el.dataset.idx, item = st.vault[i]; if (!item || item.debt) return;
+        if (!confirm(`${item.name}을 정말 폐기할까? 되살리는 기능은 아직 발명되지 않았어.`)) return;
+        st.vault.splice(i, 1);
+        st.disposalLog = [{ icon: '🗑️', item: item.name, result: '가치와 함께 폐기됨', at: new Date().toLocaleString() }, ...(st.disposalLog || [])].slice(0, 10);
+        saveState(); render();
+    }
+    else if (act === 'reclaim') {
+        if (cs.reclaimAttempted || ui.reclaimBusy) return;
+        const choices = (st.vault || []).map((it, i) => ({ it, i })).filter(x => x.it.from === ui.sel && !x.it.debt);
+        if (!choices.length) return;
+        const favorite = choices.find(x => x.it.favorite);
+        const target = favorite && Math.random() < 0.7 ? favorite : choices[Math.floor(Math.random() * choices.length)];
+        const success = Math.random() < 0.48;
+        cs.reclaimAttempted = true; ui.reclaimBusy = true; render();
+        let d = null;
+        try { d = await genReclaim(ui.sel, target.it, success, cs.data?.persona); }
+        catch (err) { dbg('되찾기 생성 실패:', err?.message || String(err)); }
+        ui.reclaimBusy = false;
+        if (success) {
+            const liveIndex = st.vault.indexOf(target.it);
+            if (liveIndex >= 0) st.vault.splice(liveIndex, 1);
+            cs.reclaimedItems = [{ ...target.it, reclaimedAt: new Date().toLocaleString() }, ...(cs.reclaimedItems || [])].slice(0, 10);
+        }
+        cs.reclaimResult = {
+            success, item: target.it.name,
+            detail: d?.detail || (success ? `${target.it.name}을 소리 없이 챙겨 돌아갔다.` : `${target.it.name}에 손대다 바로 걸렸다.`),
+            line: d?.line || (success ? '원래 내 거였거든. 문제 있어? 😏' : '확인만 한 거야. 손 떼라고. 🙄')
+        };
         saveState(); render();
     }
     else if (act === 'work') {
@@ -698,7 +938,7 @@ async function onAction(e) {
 느낌 예: "한 명은 가문 후계자. 한 명은 자전거 체인 빠지면 집에 못 감."
 [출력] JSON 하나만, 코드펜스 없이: { "quip": "한두 줄 비교평" }`;
         let d = null;
-        try { d = await llmJSON(prompt, 4096); } catch (e) { dbg('비교평 실패:', e?.message || String(e)); toastr.error('비교평 실패. 로그 확인.'); }
+        try { d = await llmJSON(prompt, 768); } catch (e) { dbg('비교평 실패:', e?.message || String(e)); toastr.error('비교평 실패. 로그 확인.'); }
         ui.compareBusy = false;
         if (d?.quip) { st.compareQuip = d.quip; saveState(); }
         render();

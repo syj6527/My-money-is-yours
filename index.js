@@ -1,17 +1,68 @@
-// 💰 전리품 (Spoils) — v0.6.0
+// 💰 전리품 (Spoils) — v0.6.1
 // 감정(카테고리+물건버리기) → 인수 → 금고 / 알바지옥(기록 분리·후기·별점·채팅핀). chat_metadata 채팅별 격리.
 
 const LOG = '[전리품]';
+const VERSION = '0.6.1';
 const KEY = 'spoils';
+const LOG_STORE_KEY = 'spoils_diagnostic_log_v061';
 const COOLDOWN_MS = 30 * 60 * 1000; // 새 일거리 전체 리셋 30분
 const STEAL_MIN = 1000000; // 잔액 100만원 이상이면 뽀리기 가능
 const logBuf = [];
+let requestSeq = 0;
+try {
+    const savedLog = JSON.parse(sessionStorage.getItem(LOG_STORE_KEY) || '[]');
+    if (Array.isArray(savedLog)) logBuf.push(...savedLog.slice(-220));
+} catch (e) { /* 세션 로그 복구 실패는 무시 */ }
+function safeDiagnosticJSON(value) {
+    const seen = new WeakSet();
+    try {
+        return JSON.stringify(value, (key, val) => {
+            if (/authorization|api.?key|secret|password|access.?token|refresh.?token/i.test(key)) return '[REDACTED]';
+            if (typeof val === 'string' && val.length > 2000) return val.slice(0, 2000) + `…(+${val.length - 2000}자)`;
+            if (val && typeof val === 'object') { if (seen.has(val)) return '[Circular]'; seen.add(val); }
+            return val;
+        });
+    } catch (e) { return String(value); }
+}
+function errorDetails(e) {
+    if (e == null) return { type: String(e) };
+    if (typeof e !== 'object') return { type: typeof e, value: String(e) };
+    return {
+        name: e.name, message: e.message, code: e.code, status: e.status || e.statusCode,
+        statusText: e.statusText, requestId: e.spoilsRequestId,
+        cause: e.cause ? safeDiagnosticJSON(e.cause) : undefined,
+        response: e.response ? safeDiagnosticJSON({ status: e.response.status, statusText: e.response.statusText, data: e.response.data, body: e.response.body }) : undefined,
+        stack: String(e.stack || '').split('\n').slice(0, 8).join(' | '), raw: safeDiagnosticJSON(e)
+    };
+}
+function environmentInfo() {
+    const c = (() => { try { return ctx(); } catch (e) { return {}; } })();
+    let selected = false;
+    try { selected = !!profileId(); } catch (e) { /* ignore */ }
+    return {
+        extension: VERSION,
+        stVersion: c?.version || globalThis.SillyTavern?.version || 'unknown',
+        browser: String(globalThis.navigator?.userAgent || 'unknown').slice(0, 240),
+        profileSelected: selected,
+        time: new Date().toISOString()
+    };
+}
+function syncLogView() {
+    try { const el = document.getElementById('spoils_log'); if (el) el.value = diagnosticText(); } catch (e) { /* ignore */ }
+}
 function dbg(...args) {
-    const line = args.map(a => typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch (e) { return String(a); } })()).join(' ');
-    logBuf.push(`[${new Date().toLocaleTimeString()}] ${line}`);
-    if (logBuf.length > 120) logBuf.shift();
+    const line = args.map(a => typeof a === 'string' ? a : safeDiagnosticJSON(a)).join(' ');
+    logBuf.push(`[${new Date().toISOString()}] ${line}`);
+    if (logBuf.length > 240) logBuf.shift();
+    try { sessionStorage.setItem(LOG_STORE_KEY, JSON.stringify(logBuf)); } catch (e) { /* ignore */ }
+    syncLogView();
     console.log(LOG, ...args);
 }
+function diagnosticText() {
+    return `${LOG} diagnostic v${VERSION}\nENV ${safeDiagnosticJSON(environmentInfo())}\n${logBuf.join('\n') || '(로그 없음)'}`;
+}
+function newRequestId() { return `SP-${Date.now().toString(36).slice(-6)}-${(++requestSeq).toString(36)}`.toUpperCase(); }
+function diagnosticNow() { return globalThis.performance?.now?.() ?? Date.now(); }
 const CATS = ['현금', '예적금', '주식·투자', '부동산', '차량', '귀중품', '물건', '빚'];
 const CAT_ICON = { '현금': '💵', '예적금': '🏦', '주식·투자': '📈', '부동산': '🏠', '차량': '🚗', '귀중품': '💎', '물건': '📦', '빚': '💸' };
 
@@ -165,39 +216,87 @@ ${recentLinesOf(name, 10) || '(없음)'}
 === 최근 대화 ===
 ${chat || '(없음)'}`;
 }
-function parseResult(raw) {
+function parseResult(raw, requestId = 'unknown') {
     let s = String(raw ?? '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
     const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a !== -1 && b > a) s = s.slice(a, b + 1);
-    return JSON.parse(s);
+    try { return JSON.parse(s); }
+    catch (e) {
+        dbg(`[${requestId}] JSON_PARSE_ERROR`, { error: errorDetails(e), rawLength: String(raw ?? '').length, extractedLength: s.length, preview: String(raw ?? '').slice(0, 1200) });
+        e.spoilsRequestId = requestId;
+        throw e;
+    }
 }
-function profileId() { const c = ctx(); return c.extensionSettings?.spoils?.profileId || c.extensionSettings?.connectionManager?.selectedProfile; }
-async function llmJSON(prompt, tokens) {
+function profileId() {
+    const c = ctx();
+    const selected = c.extensionSettings?.spoils?.profileId || c.extensionSettings?.connectionManager?.selectedProfile;
+    return selected && typeof selected === 'object' ? (selected.id || selected.profileId || selected.value || '') : selected;
+}
+function profileSummary(pid) {
+    const rawProfiles = ctx().extensionSettings?.connectionManager?.profiles ?? [];
+    const profiles = Array.isArray(rawProfiles) ? rawProfiles : Object.values(rawProfiles || {});
+    const p = profiles.find(x => String(x.id) === String(pid)) || {};
+    return {
+        id: String(pid), name: p.name || '(이름 없음)',
+        api: p.api || p.apiType || p.type || p.source || '(알 수 없음)',
+        model: p.model || p.modelId || p.model_id || p.customModel || '(프로필 내부/알 수 없음)',
+        profileFound: !!p.id, profileCount: profiles.length
+    };
+}
+function responseSummary(resp, raw) {
+    let keys = [];
+    try { if (resp && typeof resp === 'object') keys = Object.keys(resp).slice(0, 30); } catch (e) { /* ignore */ }
+    return {
+        responseType: Array.isArray(resp) ? 'array' : typeof resp,
+        responseKeys: keys,
+        contentType: Array.isArray(resp?.content) ? 'array' : typeof resp?.content,
+        contentParts: Array.isArray(resp?.content) ? resp.content.length : undefined,
+        rawLength: String(raw ?? '').length,
+        rawPreview: String(raw ?? '').slice(0, 800)
+    };
+}
+async function llmJSON(prompt, tokens, label = 'LLM JSON') {
     const c = ctx(), pid = profileId();
     if (!pid) { toastr.warning('설정창(Extensions → 💰 전리품)에서 연결 프로필을 골라줘'); return null; }
     const maxTokens = tokens || 2048;
-    dbg('요청:', `입력 ${String(prompt).length.toLocaleString()}자 / 출력 한도 ${maxTokens.toLocaleString()}토큰`);
-    const resp = await c.ConnectionManagerRequestService.sendRequest(pid, prompt, maxTokens);
-    const content = resp?.content;
-    const raw = typeof resp === 'string' ? resp
-        : typeof content === 'string' ? content
-            : Array.isArray(content) ? content.map(x => typeof x === 'string' ? x : (x?.text ?? x?.content ?? '')).join('')
-                : (resp?.text ?? resp?.message?.content ?? resp?.choices?.[0]?.message?.content ?? '');
-    if (!String(raw).trim()) throw new Error('empty response content');
-    dbg('응답:', String(raw).slice(0, 600));
-    return parseResult(raw);
+    const requestId = newRequestId(), started = diagnosticNow();
+    dbg(`[${requestId}] REQUEST_START`, {
+        label, profile: profileSummary(pid), promptChars: String(prompt).length,
+        roughInputTokens: Math.ceil(String(prompt).length / 2.5), maxOutputTokens: maxTokens
+    });
+    try {
+        if (!c.ConnectionManagerRequestService?.sendRequest) throw new Error('ConnectionManagerRequestService.sendRequest unavailable');
+        const resp = await c.ConnectionManagerRequestService.sendRequest(pid, prompt, maxTokens);
+        const content = resp?.content;
+        const raw = typeof resp === 'string' ? resp
+            : typeof content === 'string' ? content
+                : Array.isArray(content) ? content.map(x => typeof x === 'string' ? x : (x?.text ?? x?.content ?? '')).join('')
+                    : (resp?.text ?? resp?.message?.content ?? resp?.choices?.[0]?.message?.content ?? resp?.data?.content ?? '');
+        dbg(`[${requestId}] RESPONSE_RECEIVED`, { elapsedMs: Math.round(diagnosticNow() - started), ...responseSummary(resp, raw) });
+        if (!String(raw).trim()) {
+            const emptyError = new Error('empty response content'); emptyError.spoilsRequestId = requestId; throw emptyError;
+        }
+        const parsed = parseResult(raw, requestId);
+        dbg(`[${requestId}] REQUEST_SUCCESS`, { elapsedMs: Math.round(diagnosticNow() - started), resultKeys: Object.keys(parsed || {}), itemCount: Array.isArray(parsed?.items) ? parsed.items.length : undefined });
+        return parsed;
+    } catch (e) {
+        e.spoilsRequestId = e.spoilsRequestId || requestId;
+        dbg(`[${requestId}] REQUEST_FAILED`, { label, elapsedMs: Math.round(diagnosticNow() - started), error: errorDetails(e) });
+        throw e;
+    }
 }
 async function runAppraisal(name, card, lore) {
     if (!profileId()) { toastr.warning('설정창(Extensions → 💰 전리품)에서 연결 프로필을 골라줘'); return null; }
-    dbg('감정 시작:', name);
+    dbg('APPRAISAL_CONTEXT', { name, cardChars: String(card || '').length, loreChars: String(lore || '').length, chatChars: gatherChat().length, voiceChars: recentLinesOf(name, 10).length });
     toastr.info(`${name} 감정 중…`, '💰 전리품', { timeOut: 0, tag: 'spoils' });
-    try { const d = await llmJSON(buildPrompt(name, card, gatherChat(), lore), 2048); toastr.clear(); return d; }
+    try { const d = await llmJSON(buildPrompt(name, card, gatherChat(), lore), 2048, '재산 감정'); toastr.clear(); return d; }
     catch (e) {
-        toastr.clear(); dbg('감정 실패:', e?.message || String(e));
+        const rid = e?.spoilsRequestId || 'ID-없음';
+        toastr.clear(); dbg('APPRAISAL_FAILED', { name, requestId: rid, error: errorDetails(e) });
         const msg = String(e?.message || e);
-        if (/context|token|length|too long|maximum/i.test(msg)) toastr.error('입력이 모델 컨텍스트를 넘었어. 더 큰 컨텍스트의 연결 프로필을 골라줘.', '', { timeOut: 8000 });
-        else if (/empty|candidate|safety|block/i.test(msg)) toastr.error('모델이 빈 응답을 반환했어. 연결 프로필과 안전설정을 확인해줘.', '', { timeOut: 8000 });
-        else if (/json|unexpected|unterminated/i.test(msg)) toastr.error('응답 JSON이 잘렸거나 형식이 깨졌어. 다시 감정해봐.', '', { timeOut: 8000 });
-        else toastr.error('감정 실패. 콘솔/로그 확인.');
+        if (/context|token|length|too long|maximum/i.test(msg)) toastr.error(`입력이 모델 컨텍스트를 넘었어. 진단 ID: ${rid}`, '', { timeOut: 10000 });
+        else if (/empty|candidate|safety|block/i.test(msg)) toastr.error(`모델이 빈 응답을 반환했어. 진단 ID: ${rid}`, '', { timeOut: 10000 });
+        else if (/json|unexpected|unterminated/i.test(msg)) toastr.error(`응답 JSON이 잘렸거나 깨졌어. 진단 ID: ${rid}`, '', { timeOut: 10000 });
+        else toastr.error(`감정 실패. 진단 ID: ${rid} — 설정창에서 로그를 복사해줘.`, '', { timeOut: 12000 });
         return null;
     }
 }
@@ -271,7 +370,7 @@ async function genHiddenAsset(name, cs, found) {
 [기존 자산] ${owned || '(없음)'}
 [말투] ${recentLinesOf(name, 6) || '(없음)'}
 ${found ? '[출력] { "found": true, "item": { "category": "현금|예적금|주식·투자|부동산|차량|귀중품|물건", "icon": "이모지", "name": "숨겨진 것", "value": "가치", "note": "발견 상태", "origin": "숨긴 사연" }, "reaction": "들킨 본인의 한마디 + 이모지" }' : '[출력] { "found": false, "message": "뒤졌지만 나온 게 없는 웃긴 한 줄", "reaction": "그 모습을 본 본인의 한마디 + 이모지" }'} `;
-    return llmJSON(prompt, 1280);
+    return llmJSON(prompt, 1280, '숨은 재산 탐색');
 }
 async function genReclaim(name, item, success, persona) {
     const prompt = `'${name}'가 빼앗긴 물건 '${item.name}'(${item.value})을 몰래 되찾으려 했다. ${success ? '성공했다.' : '현장에서 들켜 실패했다.'}
@@ -280,7 +379,7 @@ async function genReclaim(name, item, success, persona) {
 [물건 사연] ${item.origin || item.note || '(없음)'}
 [말투] ${recentLinesOf(name, 6) || '(없음)'}
 [출력] { "detail": "무슨 수법을 썼는지 한 줄", "line": "들키거나 성공한 뒤 본인의 변명 한마디 + 이모지" }`;
-    return llmJSON(prompt, 1024);
+    return llmJSON(prompt, 1024, '재산 되찾기');
 }
 function maybeAuthorityEvent(st, cs, name) {
     const acquired = (st.vault || []).filter(x => x.from === name);
@@ -439,7 +538,7 @@ async function genReview(cs, entry) {
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이:
 { "before": "알바 전 한 줄 평", "tasks": ["한 일 3~5개"], "review": "다른 알바생 위한 후기 한두 문장", "mood": "이모지 + 분위기 한 마디", "stars": 정수 }`;
-    try { return await llmJSON(prompt, 1536); }
+    try { return await llmJSON(prompt, 1536, '알바 후기'); }
     catch (e) { dbg('후기 생성 실패:', e?.message || String(e)); toastr.error('후기 생성 실패. 로그 확인.'); return null; }
 }
 async function genDayReport(name, log) {
@@ -461,7 +560,7 @@ ${jobs || '(없음)'}
 [말투 예시 — 최근 대사]
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이: { "timeline": [...], "diary": "...", "resolve": "..." }`;
-    try { return await llmJSON(prompt, 1792); }
+    try { return await llmJSON(prompt, 1792, '하루 보고서'); }
     catch (e) { dbg('하루 보고서 실패:', e?.message || String(e)); toastr.error('하루 보고서 실패. 로그 확인.'); return null; }
 }
 async function genJobTakes(name, jobs) {
@@ -478,7 +577,7 @@ ${list}
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이. 알바 이름을 그대로 적어 매칭한다:
 { "takes": [ { "job": "알바 이름(위 목록 그대로)", "take": "그 알바에 대한 한 줄 생각" } ] }`;
-    try { return await llmJSON(prompt, 2048); }
+    try { return await llmJSON(prompt, 2048, '알바 평판'); }
     catch (e) { dbg('알바 평판 실패:', e?.message || String(e)); return null; }
 }
 async function ensureJobTakes(cs) {
@@ -512,7 +611,7 @@ async function genSteal(name, amount, workLog) {
 ${voice || '(없음)'}
 [${name} ↔ ${userName} 최근 대화]
 ${convo || '(없음)'}`;
-    try { return await llmJSON(prompt, 1536); }
+    try { return await llmJSON(prompt, 1536, '알바비 뽀리기'); }
     catch (e) { dbg('뽀리기 생성 실패:', e?.message || String(e)); return null; }
 }
 function showStealPopup(name, amount, d) {
@@ -541,7 +640,7 @@ async function genSpending(name) {
 [말투 예시 — 최근 대사]
 ${voice || '(없음)'}
 [출력] JSON 하나만, 코드펜스 없이: { "items": [ { "name": "오늘 산 것", "reason": "이 캐릭터 말투의 한 줄 이유" } ] }`;
-    try { return await llmJSON(prompt, 1536); }
+    try { return await llmJSON(prompt, 1536, '오늘의 소비'); }
     catch (e) { dbg('소비 생성 실패:', e?.message || String(e)); toastr.error('소비 생성 실패. 로그 확인.'); return null; }
 }
 
@@ -938,7 +1037,7 @@ async function onAction(e) {
 느낌 예: "한 명은 가문 후계자. 한 명은 자전거 체인 빠지면 집에 못 감."
 [출력] JSON 하나만, 코드펜스 없이: { "quip": "한두 줄 비교평" }`;
         let d = null;
-        try { d = await llmJSON(prompt, 768); } catch (e) { dbg('비교평 실패:', e?.message || String(e)); toastr.error('비교평 실패. 로그 확인.'); }
+        try { d = await llmJSON(prompt, 768, '재산 비교평'); } catch (e) { dbg('비교평 실패:', errorDetails(e)); toastr.error(`비교평 실패. 진단 ID: ${e?.spoilsRequestId || '없음'}`); }
         ui.compareBusy = false;
         if (d?.quip) { st.compareQuip = d.quip; saveState(); }
         render();
@@ -990,6 +1089,48 @@ async function onAction(e) {
     }
 }
 function onChange(e) { const el = e.target.closest('[data-act="pickchar"]'); if (el) { ui.sel = el.value; ui.openLog = null; render(); } }
+async function guardedAction(e) {
+    const act = e.target?.closest?.('[data-act]')?.dataset?.act || '(탭/알 수 없음)';
+    try { await onAction(e); }
+    catch (err) {
+        const rid = err?.spoilsRequestId || newRequestId();
+        dbg(`[${rid}] UI_ACTION_FAILED`, { action: act, selectedCharacter: ui.sel, error: errorDetails(err) });
+        toastr.error(`전리품 동작 실패: ${act} / 진단 ID: ${rid}`, '', { timeOut: 12000 });
+    }
+}
+
+async function copyDiagnosticLog() {
+    const txt = diagnosticText();
+    try { await navigator.clipboard.writeText(txt); toastr.success('진단 로그 복사됨'); }
+    catch (e) {
+        const ta = document.getElementById('spoils_log');
+        if (!ta) { toastr.error('로그 복사 실패'); return; }
+        ta.removeAttribute('readonly'); ta.value = txt; ta.select();
+        try { document.execCommand('copy'); toastr.success('진단 로그 복사됨'); }
+        catch (e2) { toastr.error('자동 복사 실패. 텍스트를 직접 길게 눌러 복사해줘.'); }
+        ta.setAttribute('readonly', 'readonly');
+    }
+}
+function downloadDiagnosticLog() {
+    try {
+        const blob = new Blob([diagnosticText()], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob), a = document.createElement('a');
+        a.href = url; a.download = `spoils-diagnostic-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toastr.success('진단 로그 파일 저장됨');
+    } catch (e) { dbg('LOG_DOWNLOAD_FAILED', errorDetails(e)); toastr.error('로그 파일 저장 실패. 복사 버튼을 써줘.'); }
+}
+async function runDiagnosticTest() {
+    dbg('SELF_TEST_START', environmentInfo());
+    try {
+        const d = await llmJSON('연결 진단이다. 반드시 JSON 객체 하나만 출력한다: { "ok": true, "message": "연결 정상" }', 256, '연결 자가진단');
+        if (d?.ok === true) { dbg('SELF_TEST_SUCCESS', d); toastr.success('연결·응답·JSON 파싱 모두 정상', '전리품 진단'); }
+        else { dbg('SELF_TEST_UNEXPECTED_RESULT', d); toastr.warning('연결됐지만 진단 응답 형식이 예상과 달라. 로그를 확인해줘.'); }
+    } catch (e) {
+        dbg('SELF_TEST_FAILED', errorDetails(e));
+        toastr.error(`진단 요청 실패. 진단 ID: ${e?.spoilsRequestId || '없음'}`, '', { timeOut: 12000 });
+    }
+}
 
 setInterval(() => {
     if (!ui.$box || !ui.$box.is(':visible')) return;
@@ -1011,7 +1152,7 @@ async function openPanel() {
     ui.sel = (ui.sel && cands.find(x => x.name === ui.sel)) ? ui.sel : cands[0].name;
     ui.tab = 'appraise'; ui.openLog = null;
     const $box = $('<div class="spoils-app"></div>');
-    ui.$box = $box; $box.on('click', onAction); $box.on('change', onChange);
+    ui.$box = $box; $box.on('click', guardedAction); $box.on('change', onChange);
     render();
     const popup = new c.Popup($box[0], c.POPUP_TYPE.DISPLAY, '', { wide: true, allowVerticalScrolling: true });
     ui.popup = popup;
@@ -1019,7 +1160,8 @@ async function openPanel() {
     await popup.show();
 }
 function refreshProfiles(c) {
-    const profiles = c.extensionSettings?.connectionManager?.profiles ?? [];
+    const rawProfiles = c.extensionSettings?.connectionManager?.profiles ?? [];
+    const profiles = Array.isArray(rawProfiles) ? rawProfiles : Object.values(rawProfiles || {});
     $('#spoils_profile').html(['<option value="">— ST 전역 선택 프로필 사용 —</option>']
         .concat(profiles.map(p => `<option value="${p.id}">${esc(p.name || p.id)}</option>`)).join('')).val(c.extensionSettings?.spoils?.profileId ?? '');
 }
@@ -1032,34 +1174,27 @@ function initSettings(c) {
         <div class="inline-drawer-content"><label id="spoils_profile_label" for="spoils_profile" style="cursor:pointer; user-select:none;">연결 프로필</label>
           <select id="spoils_profile" class="text_pole"></select>
           <small class="opacity50p">감정에 쓸 API. 비워두면 ST 전역 선택 프로필을 따라감.</small>
-          <div style="margin-top:8px;"><input id="spoils_save" type="button" class="menu_button" value="저장"></div>
-          <div id="spoils_logwrap" style="display:none; margin-top:10px;">
-            <label>로그</label>
-            <textarea id="spoils_log" class="text_pole" rows="8" readonly style="font-family:monospace; font-size:.8em;"></textarea>
-            <div style="margin-top:6px;"><input id="spoils_log_copy" type="button" class="menu_button" value="복사"> <input id="spoils_log_clear" type="button" class="menu_button" value="로그 비우기"></div>
+          <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;"><input id="spoils_save" type="button" class="menu_button" value="저장"><input id="spoils_diag_test" type="button" class="menu_button" value="연결 자가진단"></div>
+          <div id="spoils_logwrap" style="margin-top:12px;">
+            <label>진단 로그 <small class="opacity50p">실패 직후 복사해서 제작자에게 전달</small></label>
+            <textarea id="spoils_log" class="text_pole" rows="10" readonly style="font-family:monospace; font-size:.76em; white-space:pre; overflow:auto;"></textarea>
+            <small class="opacity50p">인증키는 자동으로 가리지만 오류 분석을 위해 응답 앞부분은 포함됩니다.</small>
+            <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;"><input id="spoils_log_copy" type="button" class="menu_button" value="로그 복사"><input id="spoils_log_download" type="button" class="menu_button" value="TXT 저장"><input id="spoils_log_clear" type="button" class="menu_button" value="로그 비우기"></div>
           </div>
         </div></div></div>`);
     refreshProfiles(c);
     $('#spoils_profile').on('change', function () { c.extensionSettings.spoils.profileId = $(this).val(); c.saveSettingsDebounced(); });
     $('#spoils_settings .inline-drawer-toggle').on('click', () => refreshProfiles(c));
     $('#spoils_save').on('click', () => { c.saveSettingsDebounced(); toastr.success('저장됐어', '💰 전리품'); });
-    let tap = 0, tapT = 0;
-    $('#spoils_profile_label').on('click', () => {
-        const now = Date.now(); if (now - tapT > 1500) tap = 0; tapT = now; tap++;
-        if (tap >= 5) {
-            tap = 0;
-            const w = $('#spoils_logwrap');
-            if (w.is(':visible')) w.hide();
-            else { $('#spoils_log').val(logBuf.join('\n') || '(비어있음)'); w.show(); toastr.info('🪵 로그 열림', '', { timeOut: 1500 }); }
-        }
+    $('#spoils_diag_test').on('click', runDiagnosticTest);
+    $('#spoils_log_copy').on('click', copyDiagnosticLog);
+    $('#spoils_log_download').on('click', downloadDiagnosticLog);
+    $('#spoils_log_clear').on('click', () => {
+        logBuf.length = 0;
+        try { sessionStorage.removeItem(LOG_STORE_KEY); } catch (e) { /* ignore */ }
+        syncLogView(); toastr.info('진단 로그 비움');
     });
-    $('#spoils_log_clear').on('click', () => { logBuf.length = 0; $('#spoils_log').val(''); });
-    $('#spoils_log_copy').on('click', async () => {
-        const txt = logBuf.join('\n');
-        try { await navigator.clipboard.writeText(txt); toastr.success('로그 복사됨'); }
-        catch (e) { const ta = document.getElementById('spoils_log'); ta.removeAttribute('readonly'); ta.select(); try { document.execCommand('copy'); } catch (e2) { } ta.setAttribute('readonly', 'readonly'); toastr.success('로그 복사됨'); }
-    });
-    console.log(LOG, '설정 드로어 주입 완료');
+    dbg('EXTENSION_READY', environmentInfo());
 }
 function injectButton() {
     if (document.getElementById('spoils_button')) return;

@@ -1,4 +1,4 @@
-/* 💰 전리품 — 파스텔 수련 연못 (라이트) v0.6 */
+/* 💰 전리품 — 파스텔 수련 연못 (라이트) v0.6.1 */
 
 /* 팝업 꽉 채우기 + 둥근 모서리 + ST 기본 닫기 숨김 */
 .popup:has(.spoils-app){ padding:0; background:#FBF8EC; border-color:#ECE3CE; border-radius:20px; overflow:hidden; }
